@@ -2,6 +2,8 @@
 
 Learning neural networks replicating the code from scratch following the YouTube videos/lectures and Jupyter notebooks from the original repo. Original repository can be found at https://github.com/karpathy/nn-zero-to-hero/tree/master. 
 
+--
+
 ** Setting up the environment and installing packages to run code in VSCode.
 - conda create -n nanogpt python==3.8
 - pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
