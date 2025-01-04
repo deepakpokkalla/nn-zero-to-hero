@@ -66,19 +66,23 @@ def estimate_loss():
 class Head(nn.Module):
     """ one head of self-attention """
 
-    def __init__(self,head_size):
+    def __init__(self,head_size): # head_size = n_embd/n_head
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size)))
+        # non-trainable attribute, available as self.tril
+        self.register_buffer('tril', torch.tril(torch.ones(block_size,block_size))) 
 
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B, T, C = x.shape
+        print(B,T,C)
         k = self.key(x) # (B,T,C); C = head_size here! else, head_size instead of C
         q = self.query(x) # (B,T,C); C = head_size here! else, head_size instead of C
+        print(k.shape, q.shape)
+        dfnhfb
         # compute attention scores ("affinities"); C = head_size here! else, 'self.head_size' instead of C below. 
         wei = q @ k.transpose(-2,-1) *C**-0.5 # (B,T,C) @ (B,C,T) -> (B,T,T)
         
@@ -120,7 +124,7 @@ class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, 4*n_embd), # why to multiply with 4 as in transformers paper?
+            nn.Linear(n_embd, 4*n_embd), # why to multiply with 4 as in transformers paper - just a design choice in transformers architecture?
             nn.ReLU(),
             nn.Linear(4*n_embd, n_embd),
             nn.Dropout(dropout),
@@ -136,7 +140,7 @@ class Block(nn.Module):
         # n_embd: embedding dimension, n_head: the number of heads we'd like 
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size) # communication
+        self.sa = MultiHeadAttention(n_head, head_size) # communication hs: head_size == 16?
         self.ffwd = FeedForward(n_embd) # computation (B,T,C)
         self.ln1 = nn.LayerNorm(n_embd) # layernorm along C dimension, per-token transformation
         self.ln2 = nn.LayerNorm(n_embd) # layernorm along C dimension, per-token transformation
@@ -210,7 +214,7 @@ class BigramLanguageModel(nn.Module):
     # Embedding 2: Positional embedding for the tokens 
     def generate(self, idx, max_new_tokens):
         # idx is (B,T) array of indices in the current context
-        # NOTE: there is not limit on T value (context lunch or so), thus you can keep appending new tokens
+        # NOTE: there is not limit on T value (context length or so), thus you can keep appending new tokens
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
             idx_cond = idx[:,-block_size:]
