@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -43,11 +44,15 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1,2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1,2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1,2) # (B, nh, T, hs)
-        # attention (materializes the large(T,T) matrix for all the queries and keys)
-        att = (q @ k.transpose(-2,-1)) * (1.0/math.sqrt(k.size(-1))) # head_size(hs) instead of C/n_embd here
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1) # (B, nh, T, T)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        
+        # # attention (materializes the large(T,T) matrix for all the queries and keys)
+        # # these operations take a ton of memory
+        # att = (q @ k.transpose(-2,-1)) * (1.0/math.sqrt(k.size(-1))) # head_size(hs) instead of C/n_embd here
+        # att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        # att = F.softmax(att, dim=-1) # (B, nh, T, T)
+        # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        
         y = y.transpose(1,2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
@@ -197,7 +202,29 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
 
         return model
-
+    
+    def configure_optimizers(self, weight_decay, learning_rate, device):
+        # start with all of the candidate parameters (that require grad)
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        # create  optim groups. Any parameters that is 2D will be weight decayed, otherwise no. 
+        # i.e., all weight tensors in matmuls + embeddings decay, all biases and layernorms don't
+        decay_params = [p for n, p in param_dict.items() if p.dim() >=2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() <2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay':weight_decay},
+            {'params': nodecay_params, 'weight_decay':0.0}
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+        print(f"num decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        # Create AdamW optimizer and use the fused version if it is available
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and 'cuda' in device
+        print(F"Using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+        return optimizer
 # -----------------------------------
 import tiktoken
 
@@ -246,28 +273,54 @@ train_loader = DataLoaderLite(B=16, T=1024)
 # train_loader = DataLoaderLite(B=8, T=256)
 
 # -----------------------------------
-# Precision stats on H100:
+# Speedup stats on H100:
 # NOTE: tok/sec is not 8x because of the GPU memory bandwidth
 # FP32: ~500ms/iter, 35k tok/sec # original (sign, range, precision)
 # TF32: ~200ms/iter, 75k tok/sec (precision reduced)
 # FP32:  (reduced exponent range & precision), gradient scalers are needed as exp. range is reduced
 # BF16: ~190ms/iter, 86k tok/sec (precision reduced)
 # torch.compile: ~80ms/iter, 200k tok/sec
+# flass attn: ~60ms/iter, 270k tok/sec (exact result as torch compile) 
+# vocab_size (50304): ~55ms/iter, 300k tok/sec
+# fused AdamW: ~53ms/iter, 305k tok/sec
+# -----------------------------------
+
 # enable tf32 
 torch.set_float32_matmul_precision('high')
-# -----------------------------------
 
 # get logits
 # model = GPT.from_pretrained('gpt2')
-model = GPT(GPTconfig())
+# model = GPT(GPTconfig())
+model = GPT(GPTconfig(vocab_size=50304))
 # model.eval()
 model.to(device)
 model = torch.compile(model)
 # logits, loss = model(x, y)
 
+# learning rate scheduler: cosine scheduler
+max_lr = 6e-4
+min_lr = max_lr * 0.1
+warmup_steps = 10
+max_steps = 50
+def get_lr(it):
+    # 1. linear warmup for warmup_iters steps
+    if it < warmup_steps:
+        return max_lr* (it+1)/warmup_steps
+    # 2. if it > lr_decay_iters, return min_lr
+    if it > max_steps:
+        return min_lr
+    # 3. in between, use cosine decay down to min_lr
+    decay_ratio = (it - warmup_steps)/(max_steps-warmup_steps)
+    assert 0<=decay_ratio<=1 # 1 when it=1 (51th step)
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return min_lr + coeff * (max_lr - min_lr)
+
 # optimizer!
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9,0.95), eps=1e-8)
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.1, betas=(0.9,0.95), eps=1e-8) # works: loss=5.880 (seed not fixed)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+
+for step in range(max_steps):
     t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
@@ -276,12 +329,17 @@ for i in range(50):
         logits, loss = model(x,y)
     # import code; code.interact(local=locals())
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(),1.0) # gradient clipping
+    # determine and set the learning rate for this iteration
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     optimizer.step()
     torch.cuda.synchronize()
     t1 = time.time()
     dt = (t1-t0)*1000 # time difference in ms
     tokens_per_sec = (train_loader.B * train_loader.T) / (t1-t0)
-    print(f"step:{i}, loss:{loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
+    print(f"step:{step} | loss:{loss.item()} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
 
 # print(logits.shape)
 # print(loss)
