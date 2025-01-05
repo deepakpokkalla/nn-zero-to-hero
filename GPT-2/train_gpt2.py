@@ -103,6 +103,7 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd), # additional layernorm after final self-attn block
         ))
+        # biggest matrix multiplication: more time consuming 768 --> 50257
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # weight sharing scheme (uses twice in the forward pass)
@@ -227,8 +228,9 @@ class DataLoaderLite:
             self.current_position = 0
         return x, y
 # -----------------------------------
-
 # attempt to autodetect the device
+import time
+
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
@@ -240,28 +242,49 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=4, T=32)
+train_loader = DataLoaderLite(B=16, T=1024)
+# train_loader = DataLoaderLite(B=8, T=256)
+
+# -----------------------------------
+# Precision stats on H100:
+# NOTE: tok/sec is not 8x because of the GPU memory bandwidth
+# FP32: ~500ms/iter, 35k tok/sec # original (sign, range, precision)
+# TF32: ~200ms/iter, 75k tok/sec (precision reduced)
+# FP32:  (reduced exponent range & precision), gradient scalers are needed as exp. range is reduced
+# BF16: ~190ms/iter, 86k tok/sec (precision reduced)
+# torch.compile: ~80ms/iter, 200k tok/sec
+# enable tf32 
+torch.set_float32_matmul_precision('high')
+# -----------------------------------
 
 # get logits
 # model = GPT.from_pretrained('gpt2')
 model = GPT(GPTconfig())
 # model.eval()
 model.to(device)
+model = torch.compile(model)
 # logits, loss = model(x, y)
 
 # optimizer!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    logits, loss = model(x,y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x,y)
+    # import code; code.interact(local=locals())
     loss.backward()
     optimizer.step()
-    print(f"step:{i}, loss:{loss.item()}")
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1-t0)*1000 # time difference in ms
+    tokens_per_sec = (train_loader.B * train_loader.T) / (t1-t0)
+    print(f"step:{i}, loss:{loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
 
-print(logits.shape)
-print(loss)
+# print(logits.shape)
+# print(loss)
 import sys; sys.exit(0)
 
 # ----------------
