@@ -26,6 +26,9 @@ Andrej Karpathy has a "Neural Networks: Zero to Hero" video series. I am replica
 
 The lecture builds a Generatively Pretrained Transformer (GPT), following the paper "Attention is All You Need" and OpenAI's GPT-2 / GPT-3. GPT can be thought of as a next-word (token) predictor or a document (prompt) completer. The video explains *attention mechanism*, the core of the transformer architecture, in a intutive way. 
 
+- Tokenizer: Character-level tokenizer
+- Dataset: Shakespeare text (input.txt)
+
 Here is a simple way to understand *attention mechanism*: 
 
 Imagine you have a cat and, for fun, you keep a journal where you note all the places your cat sat during the day (unlikely, but bear with me). Now, you need to complete this sentence:
