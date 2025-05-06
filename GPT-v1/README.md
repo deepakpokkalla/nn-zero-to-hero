@@ -12,7 +12,7 @@ Replicating a Generatively Pretrained Transformer (GPT), following the [YouTube 
 
 ---
 
-**Setting up the environment and installing packages to run code in VSCode.**
+**Environment setup**
 - conda create -n nanogpt python==3.8
 - pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 - pip install transformers==2.11.0 datasets==2.21.0
