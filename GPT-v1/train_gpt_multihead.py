@@ -87,6 +87,16 @@ class Head(nn.Module):
         out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs); Here, it's (B, T, C) as hs = (n_embd or C) in single-head attention
         return out
 
+class MultiHeadAttention(nn.Module):
+    """ multiple heads of self-attention in parallel"""
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+    
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+
 # single self-attention head model 
 class BigramLanguageModel(nn.Module):
 
@@ -96,7 +106,7 @@ class BigramLanguageModel(nn.Module):
 
         self.token_embedding_table = nn.Embedding(vocab_size,n_embd) # token identity embedding, where "n_embd != vocab_size" unlike bigram model
         self.position_embedding_table = nn.Embedding(block_size, n_embd) # token position embedding; (T, n_embd)
-        self.sa_head = Head(n_embd) # n_embd is passed and extracted as C (channel dim) in forward of Head. Thus, "C = n_embd".
+        self.sa_heads = MultiHeadAttention(4, n_embd//4) # i.e., 4 heads of 8-dimensional self-attention
         self.lm_head = nn.Linear(n_embd, vocab_size) # language modeling head; (n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
@@ -109,7 +119,7 @@ class BigramLanguageModel(nn.Module):
         x = tok_emb + pos_emb # broadcasting (B, T, n_embd) + (T, n_embd) --> (B, T, n_embd), "n_embd = C" here!
         # feed it to self-attention head: that will apply softmax (ignore future tokens)
         # n_embd is passed to "sa_head" and extracted as C (channel dim) in forward of Head. Thus, "C = n_embd".
-        x = self.sa_head(x) # apply one head of self-attention. (B, T, n_embd) --> (B, T, C), "n_embd = C" here!
+        x = self.sa_heads(x) # apply multiple heads of self-attention. (B, T, n_embd) --> (B, T, n_embd), "n_embd = C" here!
         logits = self.lm_head(x) # (B, T, n_embd) --> (B,T,vocab_size)
         
         # C here is vocab_size 
