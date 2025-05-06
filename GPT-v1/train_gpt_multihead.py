@@ -125,10 +125,12 @@ class Block(nn.Module):
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size) # communication with n_head's & head_size; # i.e., 4 heads of 8-dimensional self-attention
         self.ffwd = FeedForward(n_embd) # computation (B, T, n_embd)
+        self.ln1 = nn.LayerNorm(n_embd) # layernorm along n_embd dimension, per-token transformation
+        self.ln2 = nn.LayerNorm(n_embd) # layernorm along n_embd dimension, per-token transformation
     
     def forward(self, x):
-        x = x + self.sa(x)
-        x = x + self.ffwd(x)
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
 
 # single self-attention head model 
@@ -144,6 +146,7 @@ class BigramLanguageModel(nn.Module):
             Block(n_embd, n_head=4),
             Block(n_embd, n_head=4),
             Block(n_embd, n_head=4),
+            nn.LayerNorm(n_embd),
         )
         self.lm_head = nn.Linear(n_embd, vocab_size) # language modeling head; (n_embd, vocab_size)
 
